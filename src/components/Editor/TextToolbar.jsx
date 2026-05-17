@@ -1,11 +1,74 @@
 import React from 'react';
 import { usePDFStore } from '../../store/pdfStore';
 
+const AVAILABLE_FONTS = [
+  // Latin fonts
+  { value: 'Arial, Helvetica, sans-serif', label: 'Arial', group: 'Latin' },
+  { value: 'Helvetica, Arial, sans-serif', label: 'Helvetica', group: 'Latin' },
+  { value: '"Times New Roman", Times, serif', label: 'Times New Roman', group: 'Latin' },
+  { value: '"Courier New", Courier, monospace', label: 'Courier New', group: 'Latin' },
+  { value: 'Verdana, sans-serif', label: 'Verdana', group: 'Latin' },
+  { value: 'Georgia, serif', label: 'Georgia', group: 'Latin' },
+  { value: 'Calibri, Arial, sans-serif', label: 'Calibri', group: 'Latin' },
+  { value: 'Tahoma, sans-serif', label: 'Tahoma', group: 'Latin' },
+  // Indic script fonts
+  { value: 'Noto Sans Devanagari, Mangal, sans-serif', label: 'Devanagari (Hindi)', group: 'Indic' },
+  { value: 'Noto Sans Gujarati, Shruti, sans-serif', label: 'Gujarati', group: 'Indic' },
+  { value: 'Noto Sans Tamil, Latha, sans-serif', label: 'Tamil', group: 'Indic' },
+  { value: 'Noto Sans Bengali, Vrinda, sans-serif', label: 'Bengali', group: 'Indic' },
+  { value: 'Noto Sans Telugu, Gautami, sans-serif', label: 'Telugu', group: 'Indic' },
+  { value: 'Noto Sans Kannada, Tunga, sans-serif', label: 'Kannada', group: 'Indic' },
+  { value: 'Noto Sans Malayalam, Kartika, sans-serif', label: 'Malayalam', group: 'Indic' },
+  // Other scripts
+  { value: 'Noto Sans Arabic, Traditional Arabic, sans-serif', label: 'Arabic', group: 'Other' },
+  { value: 'Noto Sans, sans-serif', label: 'Noto Sans (Universal)', group: 'Other' },
+];
+
+// Find the best matching font option for a given font family string
+const findMatchingFont = (fontFamily) => {
+  if (!fontFamily) return AVAILABLE_FONTS[0].value;
+
+  const ff = fontFamily.toLowerCase();
+
+  // Try exact match first
+  for (const font of AVAILABLE_FONTS) {
+    if (font.value.toLowerCase() === ff) return font.value;
+  }
+
+  // Try partial match by checking if the font family contains key words
+  for (const font of AVAILABLE_FONTS) {
+    const fontLower = font.label.toLowerCase();
+    if (ff.includes(fontLower) || fontLower.includes(ff.split(',')[0].trim().toLowerCase())) {
+      return font.value;
+    }
+  }
+
+  // Check for script-specific keywords
+  if (ff.includes('devanagari') || ff.includes('mangal') || ff.includes('hindi')) {
+    return 'Noto Sans Devanagari, Mangal, sans-serif';
+  }
+  if (ff.includes('gujarati') || ff.includes('shruti')) {
+    return 'Noto Sans Gujarati, Shruti, sans-serif';
+  }
+  if (ff.includes('tamil') || ff.includes('latha')) {
+    return 'Noto Sans Tamil, Latha, sans-serif';
+  }
+  if (ff.includes('bengali') || ff.includes('vrinda')) {
+    return 'Noto Sans Bengali, Vrinda, sans-serif';
+  }
+  if (ff.includes('arabic')) {
+    return 'Noto Sans Arabic, Traditional Arabic, sans-serif';
+  }
+
+  // Default to Arial
+  return AVAILABLE_FONTS[0].value;
+};
+
 const TextToolbar = ({ onClose, currentPage }) => {
   const { selectedAnnotation, setSelectedAnnotation, updateAnnotation, deleteAnnotation, addAnnotation } = usePDFStore();
   const [text, setText] = React.useState('');
   const [fontSize, setFontSize] = React.useState(16);
-  const [fontFamily, setFontFamily] = React.useState('Arial');
+  const [fontFamily, setFontFamily] = React.useState('Arial, Helvetica, sans-serif');
   const [textColor, setTextColor] = React.useState('#000000');
   const [isBold, setIsBold] = React.useState(false);
   const [isItalic, setIsItalic] = React.useState(false);
@@ -19,7 +82,8 @@ const TextToolbar = ({ onClose, currentPage }) => {
     if (isEditing && selectedAnnotation) {
       setText(selectedAnnotation.text || '');
       setFontSize(selectedAnnotation.fontSize || 16);
-      setFontFamily(selectedAnnotation.fontFamily || 'Arial');
+      // Find the best matching font for the annotation's fontFamily
+      setFontFamily(findMatchingFont(selectedAnnotation.fontFamily));
       setTextColor(selectedAnnotation.textColor || '#000000');
       setIsBold(selectedAnnotation.isBold || false);
       setIsItalic(selectedAnnotation.isItalic || false);
@@ -28,7 +92,7 @@ const TextToolbar = ({ onClose, currentPage }) => {
     } else {
       setText('');
       setFontSize(16);
-      setFontFamily('Arial');
+      setFontFamily('Arial, Helvetica, sans-serif');
       setTextColor('#000000');
       setIsBold(false);
       setIsItalic(false);
@@ -203,15 +267,25 @@ const TextToolbar = ({ onClose, currentPage }) => {
             padding: '8px',
             border: '2px solid #cbd5e1',
             borderRadius: '6px',
-            fontSize: '14px'
+            fontSize: '14px',
+            maxWidth: '200px'
           }}
         >
-          <option value="Arial">Arial</option>
-          <option value="Helvetica">Helvetica</option>
-          <option value="Times New Roman">Times New Roman</option>
-          <option value="Courier New">Courier New</option>
-          <option value="Verdana">Verdana</option>
-          <option value="Georgia">Georgia</option>
+          <optgroup label="Latin">
+            {AVAILABLE_FONTS.filter(f => f.group === 'Latin').map(f => (
+              <option key={f.value} value={f.value}>{f.label}</option>
+            ))}
+          </optgroup>
+          <optgroup label="Indic Scripts">
+            {AVAILABLE_FONTS.filter(f => f.group === 'Indic').map(f => (
+              <option key={f.value} value={f.value}>{f.label}</option>
+            ))}
+          </optgroup>
+          <optgroup label="Other Scripts">
+            {AVAILABLE_FONTS.filter(f => f.group === 'Other').map(f => (
+              <option key={f.value} value={f.value}>{f.label}</option>
+            ))}
+          </optgroup>
         </select>
       </div>
 

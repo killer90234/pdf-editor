@@ -298,17 +298,31 @@ export default function App() {
       const allAnnotations = store.annotations;
 
       const fontCache = new Map();
+
+      const containsNonLatin = (text) => {
+        if (!text) return false;
+        // Check if text contains characters outside basic Latin + Latin Extended
+        for (let i = 0; i < text.length; i++) {
+          const code = text.charCodeAt(i);
+          if (code > 0x024F) return true; // Beyond Latin Extended-B
+        }
+        return false;
+      };
+
       const mapFontName = (fontFamily, isBold, isItalic) => {
         const f = (fontFamily || 'arial').toLowerCase();
         let base = 'Helvetica';
-        if (f.includes('times') || f.includes('serif')) base = 'TimesRoman';
-        else if (f.includes('courier') || f.includes('mono')) base = 'Courier';
-        else if (f.includes('verdana') || f.includes('georgia')) base = 'TimesRoman';
-        
+        // Check specific font names before generic "serif" to avoid matching "sans-serif"
+        if (f.includes('times') || f.includes('georgia') || f.includes('cambria') || (f.includes('serif') && !f.includes('sans-serif'))) {
+          base = 'TimesRoman';
+        } else if (f.includes('courier') || f.includes('mono')) {
+          base = 'Courier';
+        }
+
         const variants = [];
         if (isBold) variants.push('Bold');
         if (isItalic) variants.push('Italic');
-        
+
         return base + variants.join('');
       };
 
@@ -329,7 +343,65 @@ export default function App() {
 
       const sanitizeText = (text) => {
         if (!text) return '';
-        return text.replace(/[^\x20-\x7E\xA0-\xFF]/g, ' ').trim();
+        // Only remove control characters (C0 range except tab/newline/carriage return)
+        // Preserve ALL printable Unicode including Gujarati, Hindi, Devanagari, etc.
+        return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
+      };
+
+      // Map PDF font name to a CSS-compatible font family for display
+      const mapPDFNameToCSS = (pdfFontName) => {
+        if (!pdfFontName) return null;
+        const name = pdfFontName.toLowerCase();
+        // Strip font subset prefix (e.g., "ABCDEE+Calibri" -> "Calibri")
+        const cleanName = name.replace(/^[a-z]{6}\+/, '');
+
+        // Devanagari / Hindi
+        if (cleanName.includes('devanagari') || cleanName === 'mangal' || cleanName === 'aparajita') {
+          return 'Noto Sans Devanagari, Mangal, Aparajita, sans-serif';
+        }
+        // Gujarati
+        if (cleanName.includes('gujarati') || cleanName === 'shruti') {
+          return 'Noto Sans Gujarati, Shruti, sans-serif';
+        }
+        // Tamil
+        if (cleanName.includes('tamil') || cleanName === 'latha' || cleanName === 'vijaya') {
+          return 'Noto Sans Tamil, Latha, sans-serif';
+        }
+        // Bengali
+        if (cleanName.includes('bengali') || cleanName === 'shonar' || cleanName === 'vrinda') {
+          return 'Noto Sans Bengali, Vrinda, sans-serif';
+        }
+        // Telugu
+        if (cleanName.includes('telugu') || cleanName === 'gautami') {
+          return 'Noto Sans Telugu, Gautami, sans-serif';
+        }
+        // Kannada
+        if (cleanName.includes('kannada') || cleanName === 'tunga') {
+          return 'Noto Sans Kannada, Tunga, sans-serif';
+        }
+        // Malayalam
+        if (cleanName.includes('malayalam') || cleanName === 'kartika') {
+          return 'Noto Sans Malayalam, Kartika, sans-serif';
+        }
+        // Arabic / Urdu
+        if (cleanName.includes('arabic') || cleanName === 'traditional arabic' || cleanName === 'simplified arabic') {
+          return 'Noto Sans Arabic, Traditional Arabic, sans-serif';
+        }
+        // Common Latin fonts
+        if (cleanName.includes('arial') || cleanName.includes('helvetica')) return 'Arial, Helvetica, sans-serif';
+        if (cleanName.includes('times')) return '"Times New Roman", Times, serif';
+        if (cleanName.includes('courier') || cleanName.includes('consolas')) return '"Courier New", Courier, monospace';
+        if (cleanName.includes('calibri')) return 'Calibri, Arial, sans-serif';
+        if (cleanName.includes('cambria')) return 'Cambria, Georgia, serif';
+        if (cleanName.includes('georgia')) return 'Georgia, serif';
+        if (cleanName.includes('verdana')) return 'Verdana, sans-serif';
+        if (cleanName.includes('tahoma')) return 'Tahoma, sans-serif';
+        if (cleanName.includes('segoe')) return '"Segoe UI", sans-serif';
+        if (cleanName.includes('roboto')) return 'Roboto, sans-serif';
+        if (cleanName.includes('noto sans')) return 'Noto Sans, sans-serif';
+        if (cleanName.includes('noto serif')) return 'Noto Serif, serif';
+
+        return null; // no match
       };
 
       const standardFonts = {
@@ -352,6 +424,75 @@ export default function App() {
       let addedCount = 0;
       let editedCount = 0;
 
+      // Script detection: determine which Unicode script the text uses
+      const detectScript = (text) => {
+        if (!text) return null;
+        for (let i = 0; i < text.length; i++) {
+          const code = text.charCodeAt(i);
+          if (code >= 0x0900 && code <= 0x097F) return 'devanagari';
+          if (code >= 0x0A80 && code <= 0x0AFF) return 'gujarati';
+          if (code >= 0x0B80 && code <= 0x0BFF) return 'tamil';
+          if (code >= 0x0980 && code <= 0x09FF) return 'bengali';
+          if (code >= 0x0C00 && code <= 0x0C7F) return 'telugu';
+          if (code >= 0x0C80 && code <= 0x0CFF) return 'kannada';
+          if (code >= 0x0D00 && code <= 0x0D7F) return 'malayalam';
+          if (code >= 0x0600 && code <= 0x06FF) return 'arabic';
+        }
+        return null;
+      };
+
+      // Script-specific font URLs (Noto Sans fonts from Google Fonts CDN)
+      const SCRIPT_FONT_URLS = {
+        devanagari: 'https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansDevanagari/hinted/ttf/NotoSansDevanagari-Regular.ttf',
+        gujarati: 'https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansGujarati/hinted/ttf/NotoSansGujarati-Regular.ttf',
+        tamil: 'https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansTamil/hinted/ttf/NotoSansTamil-Regular.ttf',
+        bengali: 'https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansBengali/hinted/ttf/NotoSansBengali-Regular.ttf',
+        telugu: 'https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansTelugu/hinted/ttf/NotoSansTelugu-Regular.ttf',
+        kannada: 'https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansKannada/hinted/ttf/NotoSansKannada-Regular.ttf',
+        malayalam: 'https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansMalayalam/hinted/ttf/NotoSansMalayalam-Regular.ttf',
+        arabic: 'https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansArabic/hinted/ttf/NotoSansArabic-Regular.ttf',
+      };
+
+      // Cache for script-specific Unicode fonts
+      const unicodeFontCache = new Map();
+
+      // Helper: get or embed a font that supports the text
+      const getFontForText = async (ann, text) => {
+        // If text contains non-Latin characters, we need a script-specific font
+        if (containsNonLatin(text)) {
+          const script = detectScript(text);
+          if (script && unicodeFontCache.has(script)) {
+            return unicodeFontCache.get(script);
+          }
+          if (script && SCRIPT_FONT_URLS[script]) {
+            try {
+              const response = await fetch(SCRIPT_FONT_URLS[script]);
+              if (response.ok) {
+                const fontBytes = await response.arrayBuffer();
+                const scriptFont = await pdfDoc.embedFont(new Uint8Array(fontBytes), { subset: true });
+                unicodeFontCache.set(script, scriptFont);
+                return scriptFont;
+              }
+            } catch (e) {
+              console.warn(`Could not load ${script} font, falling back:`, e.message);
+            }
+          }
+          // Fallback: use Helvetica (characters may not render correctly)
+          return helveticaFont;
+        }
+
+        // For Latin text, use standard mapped font
+        const mappedFontName = mapFontName(ann.fontFamily, ann.isBold, ann.isItalic);
+        let embeddedFont = fontCache.get(mappedFontName);
+
+        if (!embeddedFont) {
+          const stdFont = standardFonts[mappedFontName] || StandardFonts.Helvetica;
+          embeddedFont = await pdfDoc.embedFont(stdFont);
+          fontCache.set(mappedFontName, embeddedFont);
+        }
+        return embeddedFont;
+      };
+
       for (const ann of allAnnotations) {
         if (!ann.text || !ann.text.trim()) continue;
         if (ann.pageIndex < 0 || ann.pageIndex >= totalPages) continue;
@@ -364,15 +505,7 @@ export default function App() {
         const sanitizedText = sanitizeText(ann.text);
         if (!sanitizedText) continue;
 
-        const mappedFontName = mapFontName(ann.fontFamily, ann.isBold, ann.isItalic);
-        let embeddedFont = fontCache.get(mappedFontName);
-
-        if (!embeddedFont) {
-          const stdFont = standardFonts[mappedFontName] || StandardFonts.Helvetica;
-          embeddedFont = await pdfDoc.embedFont(stdFont);
-          fontCache.set(mappedFontName, embeddedFont);
-        }
-
+        const embeddedFont = await getFontForText(ann, sanitizedText);
         const color = hexToRgb(ann.textColor);
 
         // For detected/edited text: draw white rectangle to cover original, then draw new text

@@ -179,16 +179,18 @@ const AnnotationLayer = ({
         onPointerDown={(e) => e.stopPropagation()}
         style={{
           position: 'absolute',
-          left: annotation.x * zoom,
-          top: annotation.y * zoom,
+          left: (annotation.x || 0) * zoom,
+          top: (annotation.y || 0) * zoom,
           minWidth: Math.max((annotation.width || 100) * zoom, 100),
+          width: 'auto',
           fontSize: `${fontSize}px`,
+          lineHeight: `${fontSize}px`,
           color: annotation.textColor || '#000000',
           fontFamily: annotation.fontFamily || 'Arial, sans-serif',
           fontWeight: annotation.isBold ? 'bold' : 'normal',
           fontStyle: annotation.isItalic ? 'italic' : 'normal',
           textDecoration: annotation.isUnderline ? 'underline' : 'none',
-          background: isDetected ? 'rgba(255,255,255,0.98)' : 'rgba(200,220,255,0.95)',
+          background: '#ffffff',
           border: '2px solid #3b82f6',
           borderRadius: '3px',
           padding: '2px 6px',
@@ -217,18 +219,25 @@ const AnnotationLayer = ({
     const color = ann.color || ann.textColor || '#000000';
     const { r, g, b } = hexToRgb(color);
     const isDetected = ann.type !== 'text';
+    // Check if text was edited or style changed
+    const isEdited = ann.text !== ann.originalText;
+    const hasStyleChanged = ann.textColor !== '#000000' || ann.isBold || ann.isItalic;
+    // Show text if: selected, new text, edited, or style changed
+    const showText = isSelected || ann.type === 'text' || isEdited || hasStyleChanged;
 
     return (
       <div
         key={ann.id}
         style={{
           position: 'absolute',
-          left: ann.x * zoom,
-          top: ann.y * zoom,
-          width: (ann.width || 0) * zoom || 'auto',
+          left: (ann.x || 0) * zoom,
+          top: (ann.y || 0) * zoom,
+          minWidth: isDetected ? (ann.width || 0) * zoom : 'auto',
           height: (ann.height || 0) * zoom || 'auto',
           fontSize: `${fontSize}px`,
-          color: `rgb(${r}, ${g}, ${b})`,
+          lineHeight: `${fontSize}px`,
+          // Always show text color when visible
+          color: showText ? `rgb(${r}, ${g}, ${b})` : 'transparent',
           fontFamily: ann.fontFamily || 'Arial, sans-serif',
           fontWeight: ann.isBold ? 'bold' : 'normal',
           fontStyle: ann.isItalic ? 'italic' : 'normal',
@@ -237,20 +246,20 @@ const AnnotationLayer = ({
           whiteSpace: 'nowrap',
           display: 'flex',
           alignItems: 'center',
-          // White background for detected text to cover original PDF text
-          backgroundColor: isDetected ? 'rgba(255,255,255,0.95)' : (isSelected ? 'rgba(200,220,255,0.3)' : 'transparent'),
-          padding: '1px 3px',
+          // White background when showing text (to hide original underneath)
+          backgroundColor: showText ? '#ffffff' : 'transparent',
+          padding: showText ? '1px 4px' : '0',
           boxSizing: 'border-box',
-          overflow: 'hidden',
-          cursor: 'grab',
+          cursor: 'pointer',
           userSelect: 'none',
           WebkitUserSelect: 'none',
           touchAction: 'none',
-          border: isSelected ? '2px solid #3b82f6' : (isDetected ? '1px dashed rgba(59,130,246,0.3)' : '1px solid transparent'),
+          // Blue border when selected
+          border: isSelected ? '2px solid #3b82f6' : '2px solid transparent',
           borderRadius: '2px',
-          zIndex: isSelected ? 20 : 10
+          zIndex: isSelected ? 20 : 5
         }}
-        title="Drag to move \u2022 Double-click to edit"
+        title="Click to edit"
         onPointerDown={(e) => handlePointerDown(ann, e)}
         onClick={handleClick}
         onDoubleClick={(e) => handleDoubleClick(ann, e)}

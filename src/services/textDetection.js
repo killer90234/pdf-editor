@@ -7,6 +7,65 @@ const OVERLAP_THRESHOLD = 0.3;
 const DUPLICATE_SIMILARITY = 0.85;
 
 /**
+ * Map a raw PDF font name (like "ABCDEE+Calibri-Bold") to a clean,
+ * CSS-friendly font family name for display in the browser.
+ */
+const mapPDFNameToCSSFamily = (pdfFontName) => {
+  if (!pdfFontName || pdfFontName === 'OCR') return null;
+
+  // Strip font subset prefix (e.g., "ABCDEE+Calibri" -> "Calibri")
+  let clean = pdfFontName.replace(/^[A-Z]{6}\+/, '');
+
+  // Strip style suffixes (-Bold, -Italic, -Regular, etc.)
+  clean = clean.replace(/[-_](Bold|Italic|Regular|BoldItalic|Medium|Light|Semibold|Heavy|Black|Thin|ExtraBold)$/i, '');
+
+  const lower = clean.toLowerCase();
+
+  // Indic scripts - map to web-safe fonts with Noto Sans fallbacks
+  // Use whole-word or long-substring matches to avoid false positives
+  if (lower.includes('devanagari') || lower === 'mangal' || lower === 'aparajita' || lower === 'kokila') {
+    return 'Noto Sans Devanagari, Mangal, Aparajita, sans-serif';
+  }
+  if (lower.includes('gujarati') || lower === 'shruti') {
+    return 'Noto Sans Gujarati, Shruti, sans-serif';
+  }
+  if (lower.includes('tamil') || lower === 'latha' || lower === 'vijaya') {
+    return 'Noto Sans Tamil, Latha, sans-serif';
+  }
+  if (lower.includes('bengali') || lower === 'shonar' || lower === 'vrinda') {
+    return 'Noto Sans Bengali, Vrinda, sans-serif';
+  }
+  if (lower.includes('telugu') || lower === 'gautami') {
+    return 'Noto Sans Telugu, Gautami, sans-serif';
+  }
+  if (lower.includes('kannada') || lower === 'tunga') {
+    return 'Noto Sans Kannada, Tunga, sans-serif';
+  }
+  if (lower.includes('malayalam') || lower === 'kartika') {
+    return 'Noto Sans Malayalam, Kartika, sans-serif';
+  }
+  if (lower.includes('arabic') || lower === 'traditional arabic' || lower === 'simplified arabic') {
+    return 'Noto Sans Arabic, Traditional Arabic, sans-serif';
+  }
+
+  // Common Latin fonts
+  if (lower.includes('arial') || lower.includes('helvetica')) return 'Arial, Helvetica, sans-serif';
+  if (lower.includes('times') || lower.includes('timesnewroman')) return '"Times New Roman", Times, serif';
+  if (lower.includes('courier') || lower.includes('consolas')) return '"Courier New", Courier, monospace';
+  if (lower.includes('calibri')) return 'Calibri, Arial, sans-serif';
+  if (lower.includes('cambria')) return 'Cambria, Georgia, serif';
+  if (lower.includes('georgia')) return 'Georgia, serif';
+  if (lower.includes('verdana')) return 'Verdana, sans-serif';
+  if (lower.includes('tahoma')) return 'Tahoma, sans-serif';
+  if (lower.includes('segoe')) return '"Segoe UI", sans-serif';
+  if (lower.includes('roboto')) return 'Roboto, sans-serif';
+  if (lower.includes('noto')) return 'Noto Sans, sans-serif';
+
+  // Return the cleaned name as-is if no mapping found
+  return clean;
+};
+
+/**
  * Merge adjacent text items on the same line into contiguous text blocks.
  */
 const mergeAdjacentItems = (items) => {
@@ -62,6 +121,20 @@ export const extractPageText = async (pdfPage) => {
       const transform = item.transform;
       const fontSize = Math.abs(transform[0]) || Math.abs(transform[3]) || 12;
 
+      // Map raw PDF font name to a CSS-friendly font family
+      const rawFontName = item.fontName || 'Helvetica';
+      const cssFontFamily = mapPDFNameToCSSFamily(rawFontName) || 'Arial, sans-serif';
+
+      // Extract text color from pdf.js if available
+      // pdf.js provides color as an array [r, g, b] with values 0-1
+      let textColor = '#000000';
+      if (item.color && Array.isArray(item.color) && item.color.length >= 3) {
+        const r = Math.round(item.color[0] * 255);
+        const g = Math.round(item.color[1] * 255);
+        const b = Math.round(item.color[2] * 255);
+        textColor = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+      }
+
       items.push({
         text: str,
         x: transform[4],
@@ -69,7 +142,11 @@ export const extractPageText = async (pdfPage) => {
         width: item.width || (str.length * fontSize * 0.5),
         height: fontSize,
         fontSize: fontSize,
-        fontName: item.fontName || 'Helvetica',
+        fontName: cssFontFamily,
+        rawFontName: rawFontName,
+        textColor: textColor,
+        isBold: rawFontName.toLowerCase().includes('bold'),
+        isItalic: rawFontName.toLowerCase().includes('italic'),
         isOCR: false
       });
     }
@@ -336,10 +413,13 @@ export const convertToAnnotations = (extractedText) => {
       seenKeys.add(uniqueKey);
 
       // Calculate proper dimensions to cover original text
-      // Add small padding to ensure full coverage
-      const padding = 2;
+      // Add padding to ensure full coverage of original PDF text
+      const padding = 4;
       const width = (item.width || (item.text.length * item.fontSize * 0.6)) + padding * 2;
-      const height = (item.height || item.fontSize) + padding;
+      const height = (item.height || item.fontSize) + padding * 2;
+
+      // Use the CSS-mapped font family (already mapped in extractPageText)
+      const fontFamily = item.fontName || 'Arial, sans-serif';
 
       annotations.push({
         id: `det_${annotationId++}_${Math.random().toString(36).substr(2, 5)}`,
@@ -348,14 +428,14 @@ export const convertToAnnotations = (extractedText) => {
         text: item.text.trim(),
         originalText: item.text.trim(),
         x: Math.max(0, (item.x || 0) - padding),
-        y: Math.max(0, (item.y || 0) - padding / 2),
+        y: Math.max(0, (item.y || 0) - padding),
         width: width,
         height: height,
         fontSize: item.fontSize || 12,
-        fontFamily: item.fontName || 'Helvetica',
-        textColor: '#000000',
-        isBold: false,
-        isItalic: false,
+        fontFamily: fontFamily,
+        textColor: item.textColor || '#000000',
+        isBold: item.isBold || false,
+        isItalic: item.isItalic || false,
         isUnderline: false,
         textAlign: 'left',
         pageIndex,
