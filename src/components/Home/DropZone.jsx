@@ -27,11 +27,16 @@ const DropZone = ({ onFileSelect, isLoading }) => {
   const handleFileSelect = (e) => {
     const files = Array.from(e.target.files)
     if (files.length > 0) {
-      if (files[0].type !== 'application/pdf' && !files[0].name.endsWith('.pdf')) {
+      const file = files[0]
+      if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
         alert('Please select a PDF file')
         return
       }
-      onFileSelect(files[0])
+      if (file.size < 100) {
+        alert('This file is too small to be a valid PDF')
+        return
+      }
+      onFileSelect(file)
     }
   }
 

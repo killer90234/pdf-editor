@@ -1,10 +1,15 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import DropZone from './components/Home/DropZone';
 import Editor from './components/Editor/Editor';
 import PageDialog from './components/Editor/PageDialog';
 import { usePDFStore } from './store/pdfStore';
+import { useAuthStore } from './store/authStore';
+import LoginModal from './components/Auth/LoginModal';
+import SignupModal from './components/Auth/SignupModal';
+import UserProfile from './components/Auth/UserProfile';
+import PricingPage from './components/Pricing/PricingPage';
 
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -73,8 +78,14 @@ export default function App() {
   const [dialogMax, setDialogMax] = useState(1);
   
   const { resetStore, setPdfBytes } = usePDFStore();
+  const { user, profile, initAuth, loading: authLoading, checkAndIncrementEdit, setShowLoginModal, showLoginModal, showSignupModal, showPricingModal, setShowPricingModal } = useAuthStore();
   const pdfBytesRef = useRef(null);
   const fileBytesRef = useRef(null);
+
+  useEffect(() => {
+    const unsubscribe = initAuth();
+    return () => unsubscribe();
+  }, [initAuth]);
   
   // Helper: get PDF bytes from all sources (tiered fallback)
   const getPdfBytes = useCallback(() => {
@@ -238,43 +249,103 @@ export default function App() {
 
   const handleFileSelect = useCallback(async (file) => {
     if (isLoading) return;
-    
+
+    // === PLAN LIMIT CHECK ===
+    const currentUser = useAuthStore.getState().user;
+    const currentProfile = useAuthStore.getState().profile;
+
+    if (currentUser) {
+      // Signed-in user: check limits from Firestore profile
+      if (!currentProfile) {
+        setError('Please wait, loading your profile...');
+        return;
+      }
+      const { canEdit } = await import('./services/firestoreService');
+      const result = canEdit(currentProfile);
+      console.log('🔍 Plan check:', { plan: currentProfile.plan, editsUsed: currentProfile.editsUsed, result });
+      if (!result.allowed) {
+        console.log('❌ Edit limit reached!');
+        setError(`You've used all ${result.plan.maxEdits} edits on the ${result.plan.label} plan. Please upgrade to continue.`);
+        useAuthStore.getState().setShowPricingModal(true);
+        return;
+      }
+    } else {
+      // Guest: allow 1 free edit, then require sign-in
+      const guestEdits = parseInt(localStorage.getItem('guestEdits') || '0');
+      if (guestEdits >= 1) {
+        setError('Free edit used. Please sign in to continue.');
+        setShowLoginModal(true);
+        return;
+      }
+    }
+
+    // === VALIDATE FILE ===
+    if (file.size < 100) {
+      setError('This file is too small to be a valid PDF. Please select a real PDF file.');
+      return;
+    }
+
+    // === LOAD PDF ===
     setCurrentFile(file);
     setIsLoading(true);
     setError(null);
     setCurrentPage(0);
     resetStore();
     usePDFStore.getState().setCurrentPage(0);
-    
+
     try {
-      console.log('📁 Loading PDF:', file.name);
-      
+      console.log('📁 Loading PDF:', file.name, 'Size:', file.size, 'bytes');
+
       const arrayBuffer = await file.arrayBuffer();
       const pdfBytes = new Uint8Array(arrayBuffer);
-      // Store bytes in ALL sources (refs, store, module-level backup)
+
+      // Validate PDF header (safe for large files - no spread operator)
+      const headerBytes = pdfBytes.slice(0, 5);
+      const headerStr = new TextDecoder().decode(headerBytes);
+      console.log('📄 File header bytes:', Array.from(headerBytes), 'String:', headerStr);
+      if (headerStr !== '%PDF-') {
+        throw new Error('This file is not a valid PDF. Expected "%PDF-" header, got: "' + headerStr + '"');
+      }
+
       storePdfBytes(pdfBytes);
-      console.log('📁 PDF bytes stored, length:', pdfBytes.length);
-      
+
       const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
       const pdfDocument = await loadingTask.promise;
-      
+
       if (!pdfDocument || pdfDocument.numPages === 0) {
         throw new Error('Invalid PDF');
       }
-      
+
       setPdfDoc(pdfDocument);
       setPageCount(pdfDocument.numPages);
       setCurrentPage(0);
       usePDFStore.getState().setCurrentPage(0);
+      console.log('✅ PDF loaded successfully via pdf.js:', pdfDocument.numPages, 'pages');
 
-      const pdfLibDoc = await PDFDocument.load(pdfBytes);
-      setPdfDocLib(pdfLibDoc);	      // Don't auto-add detected annotations — let the user explicitly click "Detect Text"
-	      // to avoid duplicate/overlapping annotation overlays.
-	      console.log('🔍 Quick scan: PDF loaded (' + pdfDocument.numPages + ' pages). Click "Detect Text" to find text.');
-      
+      // pdf-lib load (optional - large files may fail here)
+      try {
+        const pdfLibDoc = await PDFDocument.load(pdfBytes);
+        setPdfDocLib(pdfLibDoc);
+        console.log('✅ pdf-lib loaded OK');
+      } catch (libErr) {
+        console.warn('⚠️ pdf-lib failed (large file?), pdf.js will still work:', libErr.message);
+        // pdf.js can still render — pdf-lib is only needed for save
+      }
+
+      // === CHARGE EDIT (only after successful load) ===
+      if (currentUser) {
+        const incResult = await checkAndIncrementEdit();
+        console.log('✅ Edit charged:', incResult);
+      } else {
+        const guestEdits = parseInt(localStorage.getItem('guestEdits') || '0');
+        localStorage.setItem('guestEdits', String(guestEdits + 1));
+        console.log('✅ Guest edit charged:', guestEdits + 1);
+      }
+
     } catch (err) {
       console.error('❌ Failed to load PDF:', err);
-      setError('Failed to load PDF: ' + (err.message || 'Invalid file format'));
+      setError(err.message || 'Failed to load PDF');
+      setCurrentFile(null);
     } finally {
       setIsLoading(false);
     }
@@ -570,13 +641,83 @@ export default function App() {
     resetStore();
   }, [resetStore]);
 
+  // Compute edit limit info for display
+  const editLimitInfo = (() => {
+    if (!user) {
+      const guestEdits = parseInt(localStorage.getItem('guestEdits') || '0');
+      return { used: guestEdits, max: 1, label: 'Guest', isLimit: guestEdits >= 1 };
+    }
+    if (!profile) return null;
+    const planKey = profile.plan || 'free';
+    const limits = { free: 3, basic: 10, premium: 25, max: 50 };
+    const max = limits[planKey] || 3;
+    const used = profile.editsUsed ?? 0;
+    const period = planKey === 'free' ? 'lifetime' : 'today';
+    return { used, max, label: planKey, period, isLimit: used >= max };
+  })();
+
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: '#f1f5f9' }}>
+      {/* Auth header */}
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '10px 20px', background: 'white', borderBottom: '1px solid #e5e7eb',
+        flexShrink: 0,
+      }}>
+        <div style={{ fontSize: '16px', fontWeight: '700', color: '#1e293b' }}>
+          PDF Forge
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {/* Edit counter badge */}
+          {editLimitInfo && (
+            <div
+              onClick={() => setShowPricingModal(true)}
+              style={{
+                padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '600',
+                background: editLimitInfo.isLimit ? '#fee2e2' : '#dbeafe',
+                color: editLimitInfo.isLimit ? '#dc2626' : '#2563eb',
+                cursor: 'pointer',
+              }}
+              title="Click to view plans"
+            >
+              {editLimitInfo.used}/{editLimitInfo.max === Infinity ? '∞' : editLimitInfo.max} edits
+              {editLimitInfo.period && <span style={{ fontWeight: 400, marginLeft: 4 }}>({editLimitInfo.period})</span>}
+            </div>
+          )}
+          {user ? (
+            <UserProfile />
+          ) : (
+            <>
+              <button
+                onClick={() => setShowLoginModal(true)}
+                style={{
+                  padding: '7px 16px', border: '1px solid #d1d5db', borderRadius: '6px',
+                  background: 'white', color: '#374151', fontSize: '14px', fontWeight: '500',
+                  cursor: 'pointer',
+                }}
+              >
+                Sign In
+              </button>
+              <button
+                onClick={() => useAuthStore.getState().setShowSignupModal(true)}
+                style={{
+                  padding: '7px 16px', border: 'none', borderRadius: '6px',
+                  background: '#3b82f6', color: 'white', fontSize: '14px', fontWeight: '500',
+                  cursor: 'pointer',
+                }}
+              >
+                Sign Up
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
       {!pdfDoc ? (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '32px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, padding: '32px' }}>
           <div style={{ maxWidth: '600px', textAlign: 'center' }}>
             <h1 style={{ fontSize: '32px', fontWeight: '700', color: '#1e293b', marginBottom: '16px' }}>
-              📄 PDF Editor
+              PDF Forge
             </h1>
             <p style={{ fontSize: '16px', color: '#64748b', marginBottom: '24px' }}>
               Upload a PDF, add text, move it around, and save.
@@ -591,8 +732,8 @@ export default function App() {
         </div>
       ) : (
         <>
-          <Editor 
-            pdfDocument={pdfDoc} 
+          <Editor
+            pdfDocument={pdfDoc}
             onDownload={handleDownload}
             onReset={handleReset}
             onDeletePage={showDeletePageDialog}
@@ -610,6 +751,29 @@ export default function App() {
           />
         </>
       )}
+
+      {/* Footer */}
+      <div style={{
+        padding: '10px 20px', background: 'white', borderTop: '1px solid #e5e7eb',
+        textAlign: 'center', flexShrink: 0,
+      }}>
+        <span style={{ fontSize: '12px', color: '#9ca3af' }}>
+          Powered by{' '}
+          <a
+            href="https://inforium-alliance.netlify.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: '#6b7280', textDecoration: 'none', fontWeight: '600' }}
+          >
+            Inforium Alliance
+          </a>
+        </span>
+      </div>
+
+      {/* Auth Modals */}
+      <LoginModal />
+      <SignupModal />
+      {showPricingModal && <PricingPage onClose={() => setShowPricingModal(false)} />}
     </div>
   );
 }
